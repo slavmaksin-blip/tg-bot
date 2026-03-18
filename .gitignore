@@ -1,0 +1,14 @@
+# This is a sample .gitignore file for a Python project
+
+# Exclude config files
+config.json
+config.yaml
+
+# Exclude database files
+*.db
+
+# Exclude virtual environment
+venv/
+
+# Exclude Python bytecode (compiled files)
+__pycache__/
