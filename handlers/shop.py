@@ -1,51 +1,112 @@
 # handlers/shop.py
+"""
+Shop: categories → products → product detail → buy (delegates to payments).
+"""
 
-class Shop:
-    def __init__(self):
-        self.categories = self.load_categories()
-        self.products = self.load_products()
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes, CallbackQueryHandler
 
-    def load_categories(self):
-        # Load categories from the database or API
-        return ['Electronics', 'Clothing', 'Books']
+import database as db
 
-    def load_products(self):
-        # Load products from the database or API
-        return {
-            'Electronics': ['Smartphone', 'Laptop', 'Headphones'],
-            'Clothing': ['T-shirt', 'Jeans', 'Jacket'],
-            'Books': ['Novel', 'Science', 'History']
-        }
+logger = logging.getLogger(__name__)
 
-    def get_product_details(self, category, product):
-        # Get details for a specific product
-        return {
-            'Smartphone': {'price': 299.99, 'description': 'Latest model smartphone'},
-            'Laptop': {'price': 799.99, 'description': 'High performance laptop'},
-            'Headphones': {'price': 99.99, 'description': 'Noise-cancelling headphones'},
-            'T-shirt': {'price': 19.99, 'description': 'Cotton t-shirt'},
-            'Jeans': {'price': 49.99, 'description': 'Stylish jeans'},
-            'Jacket': {'price': 79.99, 'description': 'Winter jacket'},
-            'Novel': {'price': 15.99, 'description': 'Fiction novel'},
-            'Science': {'price': 25.99, 'description': 'Science book'},
-            'History': {'price': 20.99, 'description': 'History book'},
-        }.get(product)
 
-    def select_quantity(self, product, quantity):
-        # Logic for selecting the quantity
-        return quantity
+# ─── Keyboard builders ────────────────────────────────────────────────────────
 
-    def process_payment(self, total_amount):
-        # Integration with payment gateway
-        return "Payment processed successfully for ${:.2f}".format(total_amount)
+def _back_to_menu() -> InlineKeyboardButton:
+    return InlineKeyboardButton("⬅️ Главное меню", callback_data="main_menu")
 
-# Example usage
-if __name__ == "__main__":
-    shop = Shop()
-    category = 'Electronics'
-    product = 'Smartphone'
-    quantity = 2
-    details = shop.get_product_details(category, product)
-    total_amount = details['price'] * quantity
-    payment_status = shop.process_payment(total_amount)
-    print(payment_status)
+
+def _back_to_categories() -> InlineKeyboardButton:
+    return InlineKeyboardButton("⬅️ Категории", callback_data="menu_shop")
+
+
+def _back_to_products(category_id: int) -> InlineKeyboardButton:
+    return InlineKeyboardButton("⬅️ Назад", callback_data=f"shop_cat_{category_id}")
+
+
+# ─── Categories list ──────────────────────────────────────────────────────────
+
+async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    categories = db.get_active_categories()
+    if not categories:
+        kb = InlineKeyboardMarkup([[_back_to_menu()]])
+        await query.edit_message_text("😔 Категорий пока нет.", reply_markup=kb)
+        return
+
+    rows = [
+        [InlineKeyboardButton(cat["name"], callback_data=f"shop_cat_{cat['id']}")]
+        for cat in categories
+    ]
+    rows.append([_back_to_menu()])
+    await query.edit_message_text(
+        "🛍 <b>Магазин</b>\n\nВыбери категорию:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+# ─── Products in category ─────────────────────────────────────────────────────
+
+async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    category_id = int(query.data.split("_")[-1])
+    products = db.get_products_by_category(category_id)
+
+    if not products:
+        kb = InlineKeyboardMarkup([[_back_to_categories()]])
+        await query.edit_message_text("😔 В этой категории пока нет товаров.", reply_markup=kb)
+        return
+
+    rows = [
+        [InlineKeyboardButton(
+            f"{p['name']}  —  {p['price']:.2f} USDT",
+            callback_data=f"shop_prod_{p['id']}",
+        )]
+        for p in products
+    ]
+    rows.append([_back_to_categories()])
+    await query.edit_message_text(
+        "🛍 Выбери товар:",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+# ─── Product detail ───────────────────────────────────────────────────────────
+
+async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    product_id = int(query.data.split("_")[-1])
+    product = db.get_product(product_id)
+
+    if not product:
+        await query.edit_message_text("❌ Товар не найден.")
+        return
+
+    text = (
+        f"🏷 <b>{product['name']}</b>\n\n"
+        f"{product['description'] or ''}\n\n"
+        f"💰 Цена: <b>{product['price']:.2f} USDT</b>"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 CryptoBot",  callback_data=f"pay_crypto_{product_id}")],
+        [InlineKeyboardButton("🚀 xRocket",    callback_data=f"pay_xrocket_{product_id}")],
+        [_back_to_products(product["category_id"])],
+    ])
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+# ─── Handler registration ─────────────────────────────────────────────────────
+
+def register(application) -> None:
+    application.add_handler(CallbackQueryHandler(show_categories, pattern="^menu_shop$"))
+    application.add_handler(CallbackQueryHandler(show_products,   pattern=r"^shop_cat_\d+$"))
+    application.add_handler(CallbackQueryHandler(show_product,    pattern=r"^shop_prod_\d+$"))
